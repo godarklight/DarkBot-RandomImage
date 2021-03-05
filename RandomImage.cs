@@ -78,28 +78,53 @@ namespace DarkBot.RandomImage
                 {
                     await Say(channel, sb.ToString());
                     sb.Clear();
-                }                
+                }
             }
             await Say(channel, sb.ToString());
         }
 
         private async Task PostImage(SocketTextChannel stc, ulong channelID)
         {
-            string folderPath = Path.Combine(Environment.CurrentDirectory, "Backup", channelID.ToString());
+            string folderPath = Path.Combine(Environment.CurrentDirectory, "Backup");
             if (!Directory.Exists(folderPath))
             {
                 return;
             }
-            string[] filesPath = Directory.GetFiles(folderPath);
+            string[] whitelistPaths = Directory.GetDirectories(folderPath);
+            string channelPath = null;
+            foreach (string testDir in whitelistPaths)
+            {
+                string testPath = Path.Combine(testDir, channelID.ToString());
+                if (Directory.Exists(testPath))
+                {
+                    channelPath = testPath;
+                    break;
+                }
+            }
+            if (channelPath == null)
+            {
+                return;
+            }
+            string[] filesPath = Directory.GetFiles(channelPath);
             if (filesPath.Length == 0)
             {
                 return;
             }
-            int fileID = rand.Next(filesPath.Length - 1);
-            string filePath = filesPath[fileID];
-            if (File.Exists(filePath))
+            for (int tries = 0; tries < 10; tries++)
             {
+                int fileID = rand.Next(filesPath.Length - 1);
+                string filePath = filesPath[fileID];
+                if (!File.Exists(filePath))
+                {
+                    continue;
+                }
+                long fileLength = new FileInfo(filePath).Length;
+                if (fileLength > 7 * 1024 * 1024)
+                {
+                    continue;
+                }
                 await stc.SendFileAsync(filePath, "");
+                break;
             }
         }
 
