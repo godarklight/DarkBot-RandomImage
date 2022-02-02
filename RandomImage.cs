@@ -87,8 +87,18 @@ namespace DarkBot.RandomImage
                 return;
             }
             SocketSlashCommandDataOption option = command.Data.Options.First<SocketSlashCommandDataOption>();
-            SocketChannel sc = option.Value as SocketChannel;
-            await PostImage(command, sc.Id);
+            SocketTextChannel stc = option.Value as SocketTextChannel;
+            if (stc == null)
+            {
+                await command.RespondAsync("This command only works in text channels", ephemeral: true);
+                return;
+            }
+            if (!channel.IsNsfw && stc.IsNsfw)
+            {
+                await command.RespondAsync("You can only show sfw images in sfw channels!", ephemeral: true);
+                return;
+            }
+            await PostImage(command, stc.Id);
         }
 
         private async Task PostImage(SocketSlashCommand command, ulong channelID)
