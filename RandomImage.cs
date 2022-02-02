@@ -134,7 +134,8 @@ namespace DarkBot.RandomImage
                 {
                     continue;
                 }
-                await command.RespondWithFileAsync(filePath, "");
+                Log(LogSeverity.Info, $"Sending {filePath}");
+                await command.RespondWithFileAsync(filePath, text: "");
                 return;
             }
             await command.RespondAsync("Failed to find an image to post", ephemeral: true);
