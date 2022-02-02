@@ -1,12 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using DarkBot;
 using Discord;
 using Discord.Net;
 using Discord.WebSocket;
+using Newtonsoft.Json;
 
 
 
@@ -15,10 +17,8 @@ namespace DarkBot.RandomImage
     [BotModuleDependency(new Type[] { typeof(Whitelist.Whitelist) })]
     public class RandomImage : BotModule
     {
-        Dictionary<string, ulong> commands = new Dictionary<string, ulong>();
         private DiscordSocketClient _client = null;
         private Whitelist.Whitelist _whitelist = null;
-        private string prefix = "-";
         Random rand = new Random();
 
         public Task Initialize(IServiceProvider services)
@@ -26,68 +26,77 @@ namespace DarkBot.RandomImage
             _client = services.GetService(typeof(DiscordSocketClient)) as DiscordSocketClient;
             _whitelist = services.GetService(typeof(Whitelist.Whitelist)) as Whitelist.Whitelist;
             _client.Ready += OnReady;
-            _client.MessageReceived += MessageReceived;
+            _client.SlashCommandExecuted += HandleCommand;
             return Task.CompletedTask;
         }
 
-        private Task OnReady()
+        private async Task OnReady()
         {
-            LoadDatabase();
+            foreach (SocketGuild sg in _client.Guilds)
+            {
+                Log(LogSeverity.Info, sg.Name);
+            }
+            await SetupCommands();
             Log(LogSeverity.Info, "RandomImage ready!");
-            return Task.CompletedTask;
         }
 
-        public async Task MessageReceived(SocketMessage socketMessage)
+        private async Task SetupCommands()
         {
-            SocketUserMessage message = socketMessage as SocketUserMessage;
-            if (message == null || message.Author.IsBot)
+            foreach (SocketApplicationCommand sac in await _client.GetGlobalApplicationCommandsAsync())
             {
-                return;
-            }
-            SocketTextChannel channel = message.Channel as SocketTextChannel;
-            if (channel == null)
-            {
-                return;
-            }
-            if (socketMessage.Content.Length == 0 || !socketMessage.Content.StartsWith(prefix))
-            {
-                return;
-            }
-            if (!_whitelist.ObjectOK("randomimage", channel.Id))
-            {
-                return;
-            }
-            string command = socketMessage.Content.Substring(prefix.Length);
-            if (command == "list")
-            {
-                await PostHelp(channel);
-            }
-            if (commands.ContainsKey(command))
-            {
-                await PostImage(channel, commands[command]);
-            }
-        }
-
-        private async Task PostHelp(SocketTextChannel channel)
-        {
-            StringBuilder sb = new StringBuilder();
-            foreach (KeyValuePair<string, ulong> kvp in commands)
-            {
-                sb.AppendLine(prefix + kvp.Key);
-                if (sb.Length > 1500)
+                //await sac.DeleteAsync();
+                if (sac.Name == "randomimage")
                 {
-                    await Say(channel, sb.ToString());
-                    sb.Clear();
+                    Log(LogSeverity.Error, $"RandomImage command is already set up");
+                    return;
                 }
             }
-            await Say(channel, sb.ToString());
+            SlashCommandBuilder scb = new SlashCommandBuilder();
+            scb.WithName("randomimage");
+            scb.WithDescription("Post a random image");
+            List<ChannelType> channelTypes = new List<ChannelType>();
+            channelTypes.Add(ChannelType.Text);
+            channelTypes.Add(ChannelType.DM);
+            scb.AddOption("channel", ApplicationCommandOptionType.Channel, "Channel source", isRequired: true, channelTypes: channelTypes);
+            try
+            {
+                Log(LogSeverity.Error, $"RandomImage command set up");
+                await _client.CreateGlobalApplicationCommandAsync(scb.Build());
+            }
+            catch (Exception e)
+            {
+                Log(LogSeverity.Error, $"Error setting up slash command: {e.Message}");
+            }
         }
 
-        private async Task PostImage(SocketTextChannel stc, ulong channelID)
+        private async Task HandleCommand(SocketSlashCommand command)
+        {
+            if (command.CommandName != "randomimage")
+            {
+                return;
+            }
+            SocketTextChannel channel = command.Channel as SocketTextChannel;
+            if (channel != null && !_whitelist.ObjectOK("randomimage", channel.Id))
+            {
+                await command.RespondAsync("You can only use this command in the allowed channels", ephemeral: true);
+                return;
+            }
+            if (command.Data.Options.Count == 0)
+            {
+                await command.RespondAsync("You must select a channel");
+                return;
+            }
+            SocketSlashCommandDataOption option = command.Data.Options.First<SocketSlashCommandDataOption>();
+            SocketChannel sc = option.Value as SocketChannel;
+            await PostImage(command, sc.Id);
+        }
+
+        private async Task PostImage(SocketSlashCommand command, ulong channelID)
         {
             string folderPath = Path.Combine(Environment.CurrentDirectory, "Backup");
             if (!Directory.Exists(folderPath))
             {
+                await command.RespondAsync("Backup folder not found", ephemeral: true);
                 return;
             }
             string[] whitelistPaths = Directory.GetDirectories(folderPath);
@@ -103,11 +112,13 @@ namespace DarkBot.RandomImage
             }
             if (channelPath == null)
             {
+                await command.RespondAsync("Backup of channel not found", ephemeral: true);
                 return;
             }
             string[] filesPath = Directory.GetFiles(channelPath);
             if (filesPath.Length == 0)
             {
+                await command.RespondAsync("Backup of channel has no files", ephemeral: true);
                 return;
             }
             for (int tries = 0; tries < 10; tries++)
@@ -123,40 +134,16 @@ namespace DarkBot.RandomImage
                 {
                     continue;
                 }
-                await stc.SendFileAsync(filePath, "");
-                break;
+                await command.RespondWithFileAsync(filePath, "");
+                return;
             }
-        }
-
-        private async Task Say(SocketTextChannel stc, string message)
-        {
-            await stc.SendMessageAsync(message);
+            await command.RespondAsync("Failed to find an image to post", ephemeral: true);
         }
 
         private void Log(LogSeverity severity, string text)
         {
             LogMessage logMessage = new LogMessage(severity, "RandomImage", text);
             Program.LogAsync(logMessage);
-        }
-
-        private void LoadDatabase()
-        {
-            commands.Clear();
-            string databaseString = DataStore.Load("RandomImage");
-            using (StringReader sr = new StringReader(databaseString))
-            {
-                string currentLine = null;
-                while ((currentLine = sr.ReadLine()) != null)
-                {
-                    int index = currentLine.IndexOf("=");
-                    string lhs = currentLine.Substring(0, index);
-                    string rhs = currentLine.Substring(index + 1);
-                    if (ulong.TryParse(lhs, out ulong lhsParse))
-                    {
-                        commands.Add(rhs, lhsParse);
-                    }
-                }
-            }
         }
     }
 }
